@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import (
+    JSON,
     BigInteger,
     Boolean,
     DateTime,
@@ -12,9 +13,14 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    Uuid,
 )
-from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+# Generic SQLAlchemy types keep the schema compatible with both the containerized
+# PostgreSQL development stack and the embedded SQLite desktop runtime.
+JSONB = JSON
+UUID = Uuid
 
 
 def utcnow() -> datetime:

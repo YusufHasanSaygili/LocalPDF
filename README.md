@@ -1,6 +1,6 @@
 # LocalPDF
 
-LocalPDF is a private, local-first document processing application for Windows. It processes PDF and Office files on your own computer without sending document bytes to a third-party document service.
+LocalPDF is a private, local-first Windows desktop application. It processes PDF and Office files on your own computer without sending document bytes to a third-party document service.
 
 Original files are stored once and never modified in place. Every successful operation creates a new version, a SHA-256 digest, and an append-only audit event.
 
@@ -8,17 +8,16 @@ Original files are stored once and never modified in place. Every successful ope
 
 ## Windows executable
 
-The easiest way to run LocalPDF on Windows is the single-file launcher:
+The Windows release is a self-contained desktop application:
 
 1. Download `LocalPDF.exe` from the repository's [Releases](https://github.com/YusufHasanSaygili/LocalPDF/releases) page.
-2. Run `LocalPDF.exe` and click **Install Docker & Start** when Docker Desktop is not already installed.
-3. Approve the Windows administrator prompt. The launcher installs the official Docker Desktop package through Windows Package Manager.
-4. The launcher starts Docker, builds the local services, and opens `http://localhost:3000`.
+2. Run `LocalPDF.exe`.
+3. The application opens in its own Windows desktop window. No Docker, PostgreSQL, Python, Node.js, or browser installation is required.
 
-The executable contains the application source bundle. On first launch it extracts that bundle under:
+The executable contains its local API, SQLite database engine, web runtime, and desktop shell. On first launch it extracts versioned runtime files under:
 
 ```text
-%LOCALAPPDATA%\LocalPDF\app\0.1.2
+%LOCALAPPDATA%\LocalPDF\app\0.2.0
 ```
 
 Persistent documents and generated files are stored separately under:
@@ -27,13 +26,11 @@ Persistent documents and generated files are stored separately under:
 %LOCALAPPDATA%\LocalPDF\data
 ```
 
-Closing the launcher does not stop LocalPDF. Use **Stop services** in the launcher when you want to stop the containers. Stopping services does not delete document data.
-
-The launcher itself does not bundle Docker, PostgreSQL, LibreOffice, Tesseract, or Poppler as native Windows installations. It can install the official Docker Desktop package automatically, then starts the pinned containerized stack. Docker Desktop remains the only external runtime requirement.
+Closing the LocalPDF window stops its private background processes. Documents, generated files, and the embedded SQLite database remain in the data directory. The application binds its internal HTTP endpoints only to `127.0.0.1` and does not require Docker.
 
 ## Run from source
 
-Requirements:
+The Docker Compose stack remains available for source development and integration testing. Requirements:
 
 - Docker Desktop with Docker Compose v2
 - Git, only when cloning the repository
@@ -88,7 +85,7 @@ Browser -> Next.js 15 -> FastAPI -> PostgreSQL
 
 The API never performs long-running PDF transformations inside an HTTP request. It validates the request and creates an operation and job. The worker claims that job, processes it in an isolated temporary directory, reopens generated PDFs with pikepdf, computes hashes, and publishes validated outputs with an atomic rename.
 
-PostgreSQL triggers reject updates and deletes against original and audit-event rows.
+PostgreSQL triggers reject updates and deletes against original and audit-event rows in the containerized development stack. The Windows desktop release uses an embedded SQLite database and a single local worker.
 
 The default data layout is:
 
@@ -193,4 +190,4 @@ See [PROJECT_SPEC.md](PROJECT_SPEC.md), [ARCHITECTURE.md](ARCHITECTURE.md), [DEC
 
 ## Current verification limitation
 
-The implementation host used for the first development pass did not have Docker CLI available. Backend unit tests, strict type checking, frontend tests/builds, and dependency audits passed, but the full Compose first run, PostgreSQL trigger integration, containerized LibreOffice/Tesseract/Poppler checks, Playwright happy path, and backup/restore round trip still need to be executed on a Docker-enabled Windows machine before calling this a production release.
+The Docker Compose deployment and the Docker-free Windows desktop runtime are separate packaging targets. The Windows build is currently an alpha release and should be tested with copies of documents until the complete desktop acceptance suite is finished.

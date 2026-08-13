@@ -4,13 +4,14 @@ build-backend = "hatchling.build"
 
 [project]
 name = "localpdf-api"
-version = "0.1.0"
+version = "0.2.0"
 requires-python = ">=3.12"
 dependencies = [
   "alembic==1.19.1",
   "fastapi==0.141.1",
   "pikepdf==10.11.0",
   "Pillow==12.3.0",
+  "PyMuPDF==1.26.4",
   "psycopg[binary]==3.2.10",
   "pydantic-settings==2.15.0",
   "python-multipart==0.0.32",

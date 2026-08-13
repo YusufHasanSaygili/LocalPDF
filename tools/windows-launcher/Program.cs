@@ -1,8 +1,10 @@
 using System.Diagnostics;
 using System.IO.Compression;
 using System.Reflection;
+using Microsoft.Web.WebView2.Core;
+using Microsoft.Web.WebView2.WinForms;
 
-namespace LocalPDF.Launcher;
+namespace LocalPDF.Desktop;
 
 internal static class Program
 {
@@ -11,426 +13,248 @@ internal static class Program
     {
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
-        Application.Run(new LauncherForm());
+        Application.Run(new DesktopForm());
     }
 }
 
-internal sealed class LauncherForm : Form
+internal sealed class DesktopForm : Form
 {
-    private const string LauncherVersion = "0.1.2";
-    private const string WebUrl = "http://localhost:3000";
-    private const string HealthUrl = "http://localhost:8000/health";
+    private const string AppVersion = "0.2.0";
+    private const string WebUrl = "http://127.0.0.1:3000";
+    private const string ApiHealthUrl = "http://127.0.0.1:8000/ready";
 
     private readonly string _productRoot = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LocalPDF");
     private readonly string _appRoot;
     private readonly string _dataRoot;
-    private readonly RichTextBox _log = new();
+    private readonly Panel _startupPanel = new();
     private readonly Label _status = new();
-    private readonly Button _start = new();
-    private readonly Button _open = new();
-    private readonly Button _stop = new();
-    private readonly Button _data = new();
-    private bool _busy;
+    private readonly RichTextBox _log = new();
+    private readonly WebView2 _webView = new();
+    private Process? _apiProcess;
+    private Process? _webProcess;
 
-    public LauncherForm()
+    public DesktopForm()
     {
-        _appRoot = Path.Combine(_productRoot, "app", LauncherVersion);
+        _appRoot = Path.Combine(_productRoot, "app", AppVersion);
         _dataRoot = Path.Combine(_productRoot, "data");
 
         Text = "LocalPDF";
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(700, 500);
-        Size = new Size(780, 560);
+        MinimumSize = new Size(960, 680);
+        Size = new Size(1380, 900);
         BackColor = Color.FromArgb(245, 245, 239);
         Font = new Font("Segoe UI", 10F);
 
         BuildInterface();
-        Shown += async (_, _) => await InitializeAsync();
+        Shown += async (_, _) => await StartApplicationAsync();
+        FormClosing += (_, _) => StopChildProcesses();
     }
 
     private void BuildInterface()
     {
-        var header = new Panel
+        _webView.Dock = DockStyle.Fill;
+        _webView.Visible = false;
+
+        _startupPanel.Dock = DockStyle.Fill;
+        _startupPanel.BackColor = Color.FromArgb(245, 245, 239);
+
+        var card = new Panel
         {
-            Dock = DockStyle.Top,
-            Height = 112,
-            BackColor = Color.FromArgb(19, 60, 58),
-            Padding = new Padding(28, 20, 28, 18)
+            Size = new Size(720, 430),
+            BackColor = Color.White,
+            Anchor = AnchorStyles.None,
+            Location = new Point((ClientSize.Width - 720) / 2, (ClientSize.Height - 430) / 2)
         };
+        _startupPanel.Resize += (_, _) => card.Location = new Point(
+            Math.Max(0, (_startupPanel.ClientSize.Width - card.Width) / 2),
+            Math.Max(0, (_startupPanel.ClientSize.Height - card.Height) / 2));
+
         var title = new Label
         {
             Text = "LocalPDF",
-            ForeColor = Color.White,
-            Font = new Font("Georgia", 24F, FontStyle.Bold),
+            Font = new Font("Georgia", 28F, FontStyle.Bold),
+            ForeColor = Color.FromArgb(19, 60, 58),
             AutoSize = true,
-            Location = new Point(26, 18)
+            Location = new Point(32, 24)
         };
         var subtitle = new Label
         {
             Text = "Private, local-first document processing",
-            ForeColor = Color.FromArgb(185, 216, 207),
+            ForeColor = Color.FromArgb(82, 99, 96),
             AutoSize = true,
-            Location = new Point(29, 61)
+            Location = new Point(35, 78)
         };
-        _status.Text = "Preparing local application…";
-        _status.ForeColor = Color.FromArgb(229, 244, 239);
+        _status.Text = "Starting local application...";
+        _status.Font = new Font("Segoe UI Semibold", 11F);
+        _status.ForeColor = Color.FromArgb(13, 102, 95);
         _status.AutoSize = true;
-        _status.Location = new Point(500, 32);
-        header.Controls.Add(title);
-        header.Controls.Add(subtitle);
-        header.Controls.Add(_status);
+        _status.Location = new Point(35, 122);
 
-        var warning = new Label
-        {
-            Dock = DockStyle.Top,
-            Height = 52,
-            Padding = new Padding(28, 16, 18, 8),
-            Text = "LocalPDF requires Docker Desktop. Files stay on this computer by default.",
-            ForeColor = Color.FromArgb(82, 99, 96)
-        };
-
-        var actions = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Top,
-            Height = 66,
-            Padding = new Padding(23, 10, 20, 8),
-            FlowDirection = FlowDirection.LeftToRight,
-            WrapContents = false
-        };
-        ConfigureButton(_start, "Start LocalPDF", Color.FromArgb(13, 102, 95), Color.White);
-        ConfigureButton(_open, "Open application", Color.FromArgb(227, 241, 237), Color.FromArgb(13, 102, 95));
-        ConfigureButton(_stop, "Stop services", Color.White, Color.FromArgb(112, 72, 61));
-        ConfigureButton(_data, "Open data folder", Color.White, Color.FromArgb(82, 99, 96));
-        _start.Click += async (_, _) => await StartLocalPdfAsync();
-        _open.Enabled = false;
-        _stop.Enabled = false;
-        _open.Click += (_, _) => OpenUrl(WebUrl);
-        _stop.Click += async (_, _) => await StopLocalPdfAsync();
-        _data.Click += (_, _) => OpenFolder(_dataRoot);
-        actions.Controls.AddRange([_start, _open, _stop, _data]);
-
-        _log.Dock = DockStyle.Fill;
-        _log.Margin = new Padding(28);
         _log.ReadOnly = true;
         _log.BorderStyle = BorderStyle.None;
-        _log.BackColor = Color.White;
+        _log.BackColor = Color.FromArgb(248, 250, 248);
         _log.ForeColor = Color.FromArgb(36, 54, 58);
         _log.Font = new Font("Consolas", 9F);
-        _log.Padding = new Padding(12);
+        _log.Location = new Point(35, 164);
+        _log.Size = new Size(650, 220);
 
-        var logHost = new Panel { Dock = DockStyle.Fill, Padding = new Padding(28, 6, 28, 26) };
-        logHost.Controls.Add(_log);
+        var privacy = new Label
+        {
+            Text = "No Docker. No cloud upload. Your files stay on this computer.",
+            ForeColor = Color.FromArgb(82, 99, 96),
+            AutoSize = true,
+            Location = new Point(35, 398)
+        };
 
-        Controls.Add(logHost);
-        Controls.Add(actions);
-        Controls.Add(warning);
-        Controls.Add(header);
+        card.Controls.AddRange([title, subtitle, _status, _log, privacy]);
+        _startupPanel.Controls.Add(card);
+        Controls.Add(_webView);
+        Controls.Add(_startupPanel);
     }
 
-    private static void ConfigureButton(Button button, string text, Color background, Color foreground)
-    {
-        button.Text = text;
-        button.AutoSize = true;
-        button.Height = 40;
-        button.Padding = new Padding(12, 4, 12, 4);
-        button.Margin = new Padding(5);
-        button.FlatStyle = FlatStyle.Flat;
-        button.FlatAppearance.BorderColor = Color.FromArgb(210, 220, 215);
-        button.BackColor = background;
-        button.ForeColor = foreground;
-        button.Cursor = Cursors.Hand;
-    }
-
-    private async Task InitializeAsync()
+    private async Task StartApplicationAsync()
     {
         try
         {
             Directory.CreateDirectory(_dataRoot);
-            ExtractApplicationBundle();
-            AppendLog($"Application files: {_appRoot}");
-            AppendLog($"Document data: {_dataRoot}");
-            AppendLog("The launcher never uploads document bytes to a vendor service.");
+            SetStatus("Preparing desktop runtime...");
+            await Task.Run(ExtractRuntime);
+            AppendLog($"Application runtime: {_appRoot}");
+            AppendLog($"Private data: {_dataRoot}");
 
-            var docker = FindDockerExecutable();
-            if (docker is null)
+            if (await IsHealthyAsync(ApiHealthUrl) || await IsHealthyAsync(WebUrl))
             {
-                SetStatus("Docker Desktop required", Color.FromArgb(255, 218, 138));
-                AppendLog("Docker Desktop was not found. Click the button to install it automatically.");
-                AppendLog("Windows will ask for administrator approval during installation.");
-                _start.Text = "Install Docker & Start";
-                return;
+                throw new InvalidOperationException(
+                    "LocalPDF ports are already in use. Close any older LocalPDF instance and retry.");
             }
 
-            if (await IsStackHealthyAsync())
+            SetStatus("Starting local document engine...");
+            _apiProcess = StartApi();
+            if (!await WaitForHealthAsync(ApiHealthUrl, TimeSpan.FromSeconds(45)))
             {
-                SetStatus("Running", Color.FromArgb(108, 218, 176));
-                AppendLog("LocalPDF is already running.");
-                _open.Enabled = true;
-                _stop.Enabled = true;
+                throw new InvalidOperationException("The local document engine could not start.");
             }
-            else
+
+            SetStatus("Starting desktop interface...");
+            _webProcess = StartWeb();
+            if (!await WaitForHealthAsync(WebUrl, TimeSpan.FromSeconds(45)))
             {
-                SetStatus("Ready to start", Color.FromArgb(229, 244, 239));
+                throw new InvalidOperationException("The desktop interface could not start.");
             }
+
+            SetStatus("Opening LocalPDF...");
+            var webViewData = Path.Combine(_dataRoot, "webview");
+            var environment = await CoreWebView2Environment.CreateAsync(null, webViewData);
+            await _webView.EnsureCoreWebView2Async(environment);
+            _webView.CoreWebView2.Settings.AreDevToolsEnabled = false;
+            _webView.CoreWebView2.Settings.IsStatusBarEnabled = false;
+            _webView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = true;
+            _webView.Source = new Uri(WebUrl);
+            _webView.Visible = true;
+            _startupPanel.Visible = false;
         }
         catch (Exception exception)
         {
-            SetStatus("Setup failed", Color.FromArgb(255, 190, 180));
-            AppendLog(exception.Message);
-        }
-    }
-
-    private void ExtractApplicationBundle()
-    {
-        Directory.CreateDirectory(_appRoot);
-        var marker = Path.Combine(_appRoot, ".bundle-version");
-        if (File.Exists(marker) && File.ReadAllText(marker).Trim() == LauncherVersion &&
-            File.Exists(Path.Combine(_appRoot, "docker-compose.yml")))
-        {
-            return;
-        }
-
-        using var resource = Assembly.GetExecutingAssembly()
-            .GetManifestResourceStream("LocalPDF.bundle.zip")
-            ?? throw new InvalidOperationException("The embedded LocalPDF application bundle is missing.");
-        using var archive = new ZipArchive(resource, ZipArchiveMode.Read);
-        archive.ExtractToDirectory(_appRoot, overwriteFiles: true);
-        File.WriteAllText(marker, LauncherVersion);
-    }
-
-    private async Task StartLocalPdfAsync()
-    {
-        if (_busy)
-        {
-            return;
-        }
-
-        var docker = FindDockerExecutable();
-        if (docker is null)
-        {
-            var answer = MessageBox.Show(
-                "LocalPDF needs Docker Desktop. Install the official Docker Desktop package automatically now?\n\nWindows may ask for administrator approval.",
-                "Install Docker Desktop",
-                MessageBoxButtons.YesNo,
-                MessageBoxIcon.Question);
-            if (answer != DialogResult.Yes) return;
-        }
-
-        SetBusy(true);
-        try
-        {
-            if (docker is null)
-            {
-                SetStatus("Installing Docker Desktop...", Color.FromArgb(255, 218, 138));
-                docker = await InstallDockerDesktopAsync();
-                _start.Text = "Start LocalPDF";
-            }
-
-            SetStatus("Starting Docker…", Color.FromArgb(255, 218, 138));
-            if (!await IsDockerReadyAsync(docker))
-            {
-                StartDockerDesktop();
-                AppendLog("Waiting for Docker Desktop…");
-                var dockerReady = false;
-                for (var attempt = 0; attempt < 60; attempt++)
-                {
-                    await Task.Delay(2000);
-                    if (await IsDockerReadyAsync(docker))
-                    {
-                        dockerReady = true;
-                        break;
-                    }
-                }
-
-                if (!dockerReady)
-                {
-                    throw new InvalidOperationException(
-                        "Docker Desktop did not become ready. Open Docker Desktop and retry.");
-                }
-            }
-
-            SetStatus("Building services…", Color.FromArgb(255, 218, 138));
-            AppendLog("Running: docker compose up -d --build");
-            var exitCode = await RunDockerAsync(docker, "compose up -d --build", logOutput: true);
-            if (exitCode != 0)
-            {
-                throw new InvalidOperationException("Docker Compose could not start LocalPDF. See the log above.");
-            }
-
-            SetStatus("Waiting for LocalPDF…", Color.FromArgb(255, 218, 138));
-            for (var attempt = 0; attempt < 150; attempt++)
-            {
-                if (await IsStackHealthyAsync())
-                {
-                    SetStatus("Running", Color.FromArgb(108, 218, 176));
-                    AppendLog("LocalPDF is ready at http://localhost:3000");
-                    _open.Enabled = true;
-                    _stop.Enabled = true;
-                    OpenUrl(WebUrl);
-                    return;
-                }
-                await Task.Delay(2000);
-            }
-
-            throw new InvalidOperationException("LocalPDF did not become healthy within five minutes.");
-        }
-        catch (Exception exception)
-        {
-            SetStatus("Start failed", Color.FromArgb(255, 190, 180));
+            SetStatus("LocalPDF could not start", Color.FromArgb(174, 58, 45));
             AppendLog(exception.Message);
             MessageBox.Show(exception.Message, "LocalPDF", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
-        finally
-        {
-            SetBusy(false);
-        }
     }
 
-    private async Task StopLocalPdfAsync()
+    private void ExtractRuntime()
     {
-        if (_busy)
+        var marker = Path.Combine(_appRoot, ".runtime-version");
+        if (File.Exists(marker) && File.ReadAllText(marker).Trim() == AppVersion &&
+            File.Exists(Path.Combine(_appRoot, "api", "LocalPDF.Api.exe")) &&
+            File.Exists(Path.Combine(_appRoot, "web", "server.js")) &&
+            File.Exists(Path.Combine(_appRoot, "runtime", "node.exe")))
         {
             return;
         }
 
-        var docker = FindDockerExecutable();
-        if (docker is null)
-        {
-            return;
-        }
-
-        SetBusy(true);
-        try
-        {
-            SetStatus("Stopping…", Color.FromArgb(255, 218, 138));
-            var exitCode = await RunDockerAsync(docker, "compose down", logOutput: true);
-            if (exitCode != 0)
-            {
-                throw new InvalidOperationException("Docker Compose could not stop LocalPDF.");
-            }
-            SetStatus("Stopped", Color.FromArgb(229, 244, 239));
-            AppendLog("Services stopped. Document data was preserved.");
-            _open.Enabled = false;
-            _stop.Enabled = false;
-        }
-        catch (Exception exception)
-        {
-            AppendLog(exception.Message);
-        }
-        finally
-        {
-            SetBusy(false);
-        }
+        Directory.CreateDirectory(_appRoot);
+        using var resource = Assembly.GetExecutingAssembly()
+            .GetManifestResourceStream("LocalPDF.bundle.zip")
+            ?? throw new InvalidOperationException("The embedded desktop runtime is missing.");
+        using var archive = new ZipArchive(resource, ZipArchiveMode.Read);
+        archive.ExtractToDirectory(_appRoot, overwriteFiles: true);
+        File.WriteAllText(marker, AppVersion);
     }
 
-    private async Task<int> RunDockerAsync(string docker, string arguments, bool logOutput)
+    private Process StartApi()
     {
-        var startInfo = new ProcessStartInfo(docker, arguments)
-        {
-            WorkingDirectory = _appRoot,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true
-        };
-        // The launcher can install Docker while it is already running. Its inherited PATH
-        // is therefore stale, so explicitly expose docker-credential-desktop.exe and the
-        // other Docker helpers located beside docker.exe to every Docker child process.
-        var dockerBin = Path.GetDirectoryName(docker);
-        if (!string.IsNullOrWhiteSpace(dockerBin))
-        {
-            var inheritedPath = startInfo.Environment["PATH"] ?? string.Empty;
-            startInfo.Environment["PATH"] = $"{dockerBin}{Path.PathSeparator}{inheritedPath}";
-        }
-        startInfo.Environment["COMPOSE_PROJECT_NAME"] = "localpdf";
-        startInfo.Environment["LOCAL_DATA_DIR"] = _dataRoot.Replace('\\', '/');
+        var executable = Path.Combine(_appRoot, "api", "LocalPDF.Api.exe");
+        var database = Path.Combine(_dataRoot, "localpdf.sqlite3").Replace('\\', '/');
+        var startInfo = HiddenProcess(executable, _appRoot);
+        startInfo.Environment["DATABASE_URL"] = $"sqlite+pysqlite:///{database}";
+        startInfo.Environment["LOCAL_DATA_DIR"] = _dataRoot;
+        startInfo.Environment["LOCALPDF_API_PORT"] = "8000";
+        startInfo.Environment["TELEMETRY_ENABLED"] = "false";
+        return StartLoggedProcess(startInfo, "engine");
+    }
+
+    private Process StartWeb()
+    {
+        var node = Path.Combine(_appRoot, "runtime", "node.exe");
+        var webRoot = Path.Combine(_appRoot, "web");
+        var startInfo = HiddenProcess(node, webRoot, "server.js");
+        startInfo.Environment["HOSTNAME"] = "127.0.0.1";
+        startInfo.Environment["PORT"] = "3000";
+        startInfo.Environment["API_INTERNAL_URL"] = "http://127.0.0.1:8000";
         startInfo.Environment["NEXT_PUBLIC_API_BASE_URL"] = "/api/v1";
-        startInfo.Environment["API_INTERNAL_URL"] = "http://api:8000";
-
-        using var process = new Process { StartInfo = startInfo };
-        if (logOutput)
-        {
-            process.OutputDataReceived += (_, eventArgs) =>
-            {
-                if (!string.IsNullOrWhiteSpace(eventArgs.Data)) AppendLog(eventArgs.Data);
-            };
-            process.ErrorDataReceived += (_, eventArgs) =>
-            {
-                if (!string.IsNullOrWhiteSpace(eventArgs.Data)) AppendLog(eventArgs.Data);
-            };
-        }
-        process.Start();
-        process.BeginOutputReadLine();
-        process.BeginErrorReadLine();
-        await process.WaitForExitAsync();
-        return process.ExitCode;
+        startInfo.Environment["NEXT_TELEMETRY_DISABLED"] = "1";
+        return StartLoggedProcess(startInfo, "interface");
     }
 
-    private async Task<string> InstallDockerDesktopAsync()
+    private static ProcessStartInfo HiddenProcess(string executable, string workingDirectory, string? argument = null)
     {
-        var winget = FindExecutableOnPath("winget.exe");
-        if (winget is null)
+        var startInfo = new ProcessStartInfo(executable)
         {
-            OpenUrl("https://www.docker.com/products/docker-desktop/");
-            throw new InvalidOperationException(
-                "Windows Package Manager (winget) was not found. The official Docker download page has been opened; install Docker Desktop, then retry.");
-        }
-
-        AppendLog("Installing the official Docker Desktop package with Windows Package Manager...");
-        var startInfo = new ProcessStartInfo(
-            winget,
-            "install --id Docker.DockerDesktop --exact --accept-package-agreements --accept-source-agreements --silent")
-        {
+            WorkingDirectory = workingDirectory,
             UseShellExecute = false,
             CreateNoWindow = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true
         };
+        if (argument is not null) startInfo.ArgumentList.Add(argument);
+        return startInfo;
+    }
 
-        using var process = new Process { StartInfo = startInfo };
-        process.OutputDataReceived += (_, eventArgs) =>
+    private Process StartLoggedProcess(ProcessStartInfo startInfo, string name)
+    {
+        var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
+        process.OutputDataReceived += (_, args) =>
         {
-            if (!string.IsNullOrWhiteSpace(eventArgs.Data)) AppendLog(eventArgs.Data);
+            if (!string.IsNullOrWhiteSpace(args.Data)) AppendLog($"[{name}] {args.Data}");
         };
-        process.ErrorDataReceived += (_, eventArgs) =>
+        process.ErrorDataReceived += (_, args) =>
         {
-            if (!string.IsNullOrWhiteSpace(eventArgs.Data)) AppendLog(eventArgs.Data);
+            if (!string.IsNullOrWhiteSpace(args.Data)) AppendLog($"[{name}] {args.Data}");
         };
         process.Start();
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
-        await process.WaitForExitAsync();
-
-        var docker = FindDockerExecutable();
-        if (process.ExitCode != 0 || docker is null)
-        {
-            throw new InvalidOperationException(
-                $"Docker Desktop installation did not complete (exit code {process.ExitCode}). Retry the installation or use the official Docker installer.");
-        }
-
-        AppendLog("Docker Desktop was installed successfully.");
-        return docker;
+        return process;
     }
 
-    private async Task<bool> IsDockerReadyAsync(string docker)
+    private static async Task<bool> WaitForHealthAsync(string url, TimeSpan timeout)
     {
-        try
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
         {
-            return await RunDockerAsync(docker, "info --format {{.ServerVersion}}", logOutput: false) == 0;
+            if (await IsHealthyAsync(url)) return true;
+            await Task.Delay(350);
         }
-        catch
-        {
-            return false;
-        }
+        return false;
     }
 
-    private static async Task<bool> IsStackHealthyAsync()
+    private static async Task<bool> IsHealthyAsync(string url)
     {
         try
         {
             using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
-            using var response = await client.GetAsync(HealthUrl);
+            using var response = await client.GetAsync(url);
             return response.IsSuccessStatusCode;
         }
         catch
@@ -439,61 +263,25 @@ internal sealed class LauncherForm : Form
         }
     }
 
-    private static string? FindDockerExecutable()
+    private void StopChildProcesses()
     {
-        var fromPath = FindExecutableOnPath("docker.exe");
-        if (fromPath is not null) return fromPath;
-
-        var standard = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
-            "Docker", "Docker", "resources", "bin", "docker.exe");
-        return File.Exists(standard) ? standard : null;
+        StopProcess(_webProcess);
+        StopProcess(_apiProcess);
     }
 
-    private static string? FindExecutableOnPath(string fileName)
+    private static void StopProcess(Process? process)
     {
-        var pathValue = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
-        foreach (var path in pathValue.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+        try
         {
-            var candidate = Path.Combine(path.Trim().Trim('"'), fileName);
-            if (File.Exists(candidate)) return candidate;
+            if (process is { HasExited: false }) process.Kill(entireProcessTree: true);
         }
-        return null;
-    }
-
-    private static void StartDockerDesktop()
-    {
-        var executable = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
-            "Docker", "Docker", "Docker Desktop.exe");
-        if (File.Exists(executable))
+        catch
         {
-            Process.Start(new ProcessStartInfo(executable) { UseShellExecute = true });
+            // Windows is already tearing down the process tree.
         }
     }
 
-    private static void OpenUrl(string url) =>
-        Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
-
-    private static void OpenFolder(string path)
-    {
-        Directory.CreateDirectory(path);
-        Process.Start(new ProcessStartInfo("explorer.exe", path) { UseShellExecute = true });
-    }
-
-    private void SetBusy(bool busy)
-    {
-        _busy = busy;
-        _start.Enabled = !busy;
-        _data.Enabled = !busy;
-        if (busy)
-        {
-            _open.Enabled = false;
-            _stop.Enabled = false;
-        }
-    }
-
-    private void SetStatus(string text, Color color)
+    private void SetStatus(string text, Color? color = null)
     {
         if (InvokeRequired)
         {
@@ -501,7 +289,7 @@ internal sealed class LauncherForm : Form
             return;
         }
         _status.Text = text;
-        _status.ForeColor = color;
+        if (color.HasValue) _status.ForeColor = color.Value;
     }
 
     private void AppendLog(string message)

@@ -3,6 +3,8 @@ import logging
 import os
 import shutil
 import socket
+import sqlite3
+import stat
 import threading
 import time
 import uuid
@@ -11,7 +13,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from PIL import Image
+import pymupdf  # type: ignore[import-untyped]
 from sqlalchemy import func, select, update
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
@@ -136,11 +138,11 @@ def expire_documents() -> None:
         storage = LocalStorage()
         for document in purgeable:
             if document.original:
-                storage.resolve(document.original.relative_path, must_exist=False).unlink(
-                    missing_ok=True
+                _unlink_stored_file(
+                    storage.resolve(document.original.relative_path, must_exist=False)
                 )
             for version in document.versions:
-                storage.resolve(version.relative_path, must_exist=False).unlink(missing_ok=True)
+                _unlink_stored_file(storage.resolve(version.relative_path, must_exist=False))
                 version.deleted_at = now
             document.deleted_at = now
             append_event(
@@ -229,41 +231,35 @@ def process_preview(session: Session, job: Job, workdir: Path) -> None:
     if not source:
         raise LocalPDFError("INPUT_NOT_FOUND", "Önizleme kaynağı bulunamadı.")
     input_path = storage.resolve(source.relative_path)
-    pdftoppm = executable("pdftoppm")
-    if not pdftoppm:
-        raise LocalPDFError("TOOL_UNAVAILABLE", "Önizleme aracı hazır değil.")
-    prefix = workdir / "page"
-    run_tool(
-        [pdftoppm, "-webp", "-r", str(settings.preview_dpi), str(input_path), str(prefix)],
-        cwd=workdir,
-    )
-    pages = sorted(workdir.glob("page-*.webp"), key=_page_number_from_path)
-    if not pages:
-        raise LocalPDFError("OUTPUT_VALIDATION_FAILED", "Önizleme üretilemedi.")
-    for index, page_path in enumerate(pages, start=1):
-        relative = f"previews/{source_id}/page-{index:06d}.webp"
-        target = storage.resolve(relative, must_exist=False)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        os.replace(page_path, target)
-        digest, size = storage.hash_file(target)
-        with Image.open(target) as image:
-            width, height = image.size
-        session.add(
-            Preview(
-                source_id=source_id,
-                source_kind=source_kind,
-                page_number=index,
-                relative_path=relative,
-                width=width,
-                height=height,
-                sha256=digest,
+    with pymupdf.open(input_path) as document:
+        page_count = len(document)
+        if page_count < 1:
+            raise LocalPDFError("OUTPUT_VALIDATION_FAILED", "Önizleme üretilemedi.")
+        scale = settings.preview_dpi / 72
+        matrix = pymupdf.Matrix(scale, scale)
+        for index, page in enumerate(document, start=1):
+            relative = f"previews/{source_id}/page-{index:06d}.webp"
+            target = storage.resolve(relative, must_exist=False)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            pixmap = page.get_pixmap(matrix=matrix, alpha=False)
+            pixmap.pil_save(target, format="WEBP")
+            digest, _ = storage.hash_file(target)
+            session.add(
+                Preview(
+                    source_id=source_id,
+                    source_kind=source_kind,
+                    page_number=index,
+                    relative_path=relative,
+                    width=pixmap.width,
+                    height=pixmap.height,
+                    sha256=digest,
+                )
             )
-        )
-        job.progress_percent = min(95, round(index / len(pages) * 95))
-        if index == 1:
-            session.commit()
+            job.progress_percent = min(95, round(index / page_count * 95))
+            if index == 1:
+                session.commit()
     payload = dict(job.payload)
-    payload["result"] = {"preview_count": len(pages)}
+    payload["result"] = {"preview_count": page_count}
     job.payload = payload
 
 
@@ -439,9 +435,9 @@ def process_delete(session: Session, job: Job) -> None:
         raise LocalPDFError("DOCUMENT_NOT_FOUND", "Silinecek belge bulunamadı.")
     storage = LocalStorage()
     if document.original:
-        storage.resolve(document.original.relative_path, must_exist=False).unlink(missing_ok=True)
+        _unlink_stored_file(storage.resolve(document.original.relative_path, must_exist=False))
     for version in document.versions:
-        storage.resolve(version.relative_path, must_exist=False).unlink(missing_ok=True)
+        _unlink_stored_file(storage.resolve(version.relative_path, must_exist=False))
         version.deleted_at = datetime.now(UTC)
     document.state = "deleted"
     document.deleted_at = datetime.now(UTC)
@@ -595,33 +591,39 @@ def process_signature_seal(session: Session, job: Job, workdir: Path) -> None:
 
 
 def process_backup(session: Session, job: Job, workdir: Path) -> None:
-    pg_dump = executable("pg_dump")
-    if not pg_dump:
-        raise LocalPDFError("TOOL_UNAVAILABLE", "PostgreSQL backup aracı hazır değil.")
     database = make_url(settings.database_url)
-    database_dump = workdir / "database.dump"
-    run_tool(
-        [
-            pg_dump,
-            "--host",
-            database.host or "db",
-            "--port",
-            str(database.port or 5432),
-            "--username",
-            database.username or "localpdf",
-            "--dbname",
-            database.database or "localpdf",
-            "--format=custom",
-            f"--file={database_dump}",
-        ],
-        cwd=workdir,
-        env={"PGPASSWORD": database.password or ""},
-    )
+    if database.drivername.startswith("sqlite"):
+        database_dump = workdir / "database.sqlite3"
+        source_database = Path(database.database or "")
+        with sqlite3.connect(source_database) as source, sqlite3.connect(database_dump) as backup_db:
+            source.backup(backup_db)
+    else:
+        pg_dump = executable("pg_dump")
+        if not pg_dump:
+            raise LocalPDFError("TOOL_UNAVAILABLE", "PostgreSQL backup aracı hazır değil.")
+        database_dump = workdir / "database.dump"
+        run_tool(
+            [
+                pg_dump,
+                "--host",
+                database.host or "db",
+                "--port",
+                str(database.port or 5432),
+                "--username",
+                database.username or "localpdf",
+                "--dbname",
+                database.database or "localpdf",
+                "--format=custom",
+                f"--file={database_dump}",
+            ],
+            cwd=workdir,
+            env={"PGPASSWORD": database.password or ""},
+        )
     storage = LocalStorage()
     records: list[dict[str, Any]] = []
     archive_path = workdir / "localpdf-backup.zip"
     with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        archive.write(database_dump, "database.dump")
+        archive.write(database_dump, database_dump.name)
         for directory in ("originals", "outputs", "previews", "exports"):
             directory_path = storage.resolve(directory, must_exist=False)
             if not directory_path.exists():
@@ -701,6 +703,17 @@ def fail_job(job_id: uuid.UUID, exc: Exception) -> None:
             job.payload.get("correlation_id", str(job.id)),
             payload={"kind": job.kind, "error_code": job.error_code},
         )
+
+
+def _unlink_stored_file(path: Path) -> None:
+    """Remove an explicitly deleted stored file, including read-only originals on Windows."""
+    if not path.exists():
+        return
+    try:
+        path.chmod(stat.S_IREAD | stat.S_IWRITE)
+    except OSError:
+        pass
+    path.unlink(missing_ok=True)
 
 
 def _page_number_from_path(path: Path) -> int:

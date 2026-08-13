@@ -24,6 +24,10 @@ playwright-report/
 test-results/
 .pytest_cache/
 .pytest-tmp/
+.pytest-desktop/
+desktop-test.sqlite3
+desktop-test-data/
+tools/desktop-runtime/build/
 .mypy_cache/
 .ruff_cache/
 __pycache__/

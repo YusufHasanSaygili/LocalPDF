@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pikepdf
+import pymupdf  # type: ignore[import-untyped]
 from PIL import Image, ImageDraw
 from reportlab.lib.colors import Color
 from reportlab.lib.utils import ImageReader
@@ -205,21 +206,17 @@ def redact(source: Path, output: Path, parameters: dict[str, Any], workdir: Path
     rectangles = parameters.get("rectangles", [])
     if not rectangles:
         raise LocalPDFError("INPUT_INVALID", "En az bir redaksiyon alanı seçin.")
-    pdftoppm = executable("pdftoppm")
-    if not pdftoppm:
-        raise LocalPDFError("TOOL_UNAVAILABLE", "Kalıcı redaksiyon için Poppler hazır değil.")
-    prefix = workdir / "redact-page"
-    run_tool([pdftoppm, "-png", "-r", "180", str(source), str(prefix)], cwd=workdir)
-    images = sorted(workdir.glob("redact-page-*.png"))
     with pikepdf.open(source) as pdf:
-        if len(images) != len(pdf.pages):
+        page_count = len(pdf.pages)
+        page_sizes = [_page_size(page) for page in pdf.pages]
+    with pymupdf.open(source) as rendered_source:
+        if len(rendered_source) != page_count:
             raise LocalPDFError("OUTPUT_VALIDATION_FAILED", "Redaksiyon sayfaları doğrulanamadı.")
         rendered = canvas.Canvas(str(output))
-        for page_number, (page, image_path) in enumerate(
-            zip(pdf.pages, images, strict=True), start=1
-        ):
-            width_pt, height_pt = _page_size(page)
-            with Image.open(image_path) as opened_image:
+        for page_number, page in enumerate(rendered_source, start=1):
+            width_pt, height_pt = page_sizes[page_number - 1]
+            pixmap = page.get_pixmap(dpi=180, alpha=False)
+            with Image.open(io.BytesIO(pixmap.tobytes("png"))) as opened_image:
                 image = opened_image.convert("RGB")
                 draw = ImageDraw.Draw(image)
                 for rect in rectangles:
@@ -253,7 +250,7 @@ def redact(source: Path, output: Path, parameters: dict[str, Any], workdir: Path
                 rendered.drawImage(ImageReader(image), 0, 0, width=width_pt, height=height_pt)
                 rendered.showPage()
         rendered.save()
-    return validate_output(output, len(images))
+    return validate_output(output, page_count)
 
 
 def ocr(source: Path, output: Path, parameters: dict[str, Any], workdir: Path) -> int:
