@@ -7,7 +7,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>LocalPDF</AssemblyName>
     <RootNamespace>LocalPDF.Launcher</RootNamespace>
-    <Version>0.1.0</Version>
+    <Version>0.1.1</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <PublishSingleFile>true</PublishSingleFile>
     <SelfContained>true</SelfContained>
@@ -21,4 +21,3 @@
     <EmbeddedResource Include="bundle.zip" LogicalName="LocalPDF.bundle.zip" />
   </ItemGroup>
 </Project>
-

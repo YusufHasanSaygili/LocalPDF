@@ -11,14 +11,14 @@ Original files are stored once and never modified in place. Every successful ope
 The easiest way to run LocalPDF on Windows is the single-file launcher:
 
 1. Download `LocalPDF.exe` from the repository's [Releases](https://github.com/YusufHasanSaygili/LocalPDF/releases) page.
-2. Install and start [Docker Desktop](https://www.docker.com/products/docker-desktop/).
-3. Run `LocalPDF.exe` and click **Start LocalPDF**.
-4. The launcher builds the local services and opens `http://localhost:3000`.
+2. Run `LocalPDF.exe` and click **Install Docker & Start** when Docker Desktop is not already installed.
+3. Approve the Windows administrator prompt. The launcher installs the official Docker Desktop package through Windows Package Manager.
+4. The launcher starts Docker, builds the local services, and opens `http://localhost:3000`.
 
 The executable contains the application source bundle. On first launch it extracts that bundle under:
 
 ```text
-%LOCALAPPDATA%\LocalPDF\app\0.1.0
+%LOCALAPPDATA%\LocalPDF\app\0.1.1
 ```
 
 Persistent documents and generated files are stored separately under:
@@ -29,7 +29,7 @@ Persistent documents and generated files are stored separately under:
 
 Closing the launcher does not stop LocalPDF. Use **Stop services** in the launcher when you want to stop the containers. Stopping services does not delete document data.
 
-The launcher itself does not bundle Docker, PostgreSQL, LibreOffice, Tesseract, or Poppler as native Windows installations. It starts the pinned containerized stack, so Docker Desktop remains the only external runtime requirement.
+The launcher itself does not bundle Docker, PostgreSQL, LibreOffice, Tesseract, or Poppler as native Windows installations. It can install the official Docker Desktop package automatically, then starts the pinned containerized stack. Docker Desktop remains the only external runtime requirement.
 
 ## Run from source
 
@@ -194,4 +194,3 @@ See [PROJECT_SPEC.md](PROJECT_SPEC.md), [ARCHITECTURE.md](ARCHITECTURE.md), [DEC
 ## Current verification limitation
 
 The implementation host used for the first development pass did not have Docker CLI available. Backend unit tests, strict type checking, frontend tests/builds, and dependency audits passed, but the full Compose first run, PostgreSQL trigger integration, containerized LibreOffice/Tesseract/Poppler checks, Playwright happy path, and backup/restore round trip still need to be executed on a Docker-enabled Windows machine before calling this a production release.
-

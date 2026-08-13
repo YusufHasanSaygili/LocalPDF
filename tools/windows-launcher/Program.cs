@@ -17,7 +17,7 @@ internal static class Program
 
 internal sealed class LauncherForm : Form
 {
-    private const string LauncherVersion = "0.1.0";
+    private const string LauncherVersion = "0.1.1";
     private const string WebUrl = "http://localhost:3000";
     private const string HealthUrl = "http://localhost:8000/health";
 
@@ -156,9 +156,9 @@ internal sealed class LauncherForm : Form
             if (docker is null)
             {
                 SetStatus("Docker Desktop required", Color.FromArgb(255, 218, 138));
-                AppendLog("Docker Desktop was not found. Install it, then click Start LocalPDF.");
-                AppendLog("Download: https://www.docker.com/products/docker-desktop/");
-                _start.Text = "Install / retry Docker";
+                AppendLog("Docker Desktop was not found. Click the button to install it automatically.");
+                AppendLog("Windows will ask for administrator approval during installation.");
+                _start.Text = "Install Docker & Start";
                 return;
             }
 
@@ -209,18 +209,24 @@ internal sealed class LauncherForm : Form
         var docker = FindDockerExecutable();
         if (docker is null)
         {
-            OpenUrl("https://www.docker.com/products/docker-desktop/");
-            MessageBox.Show(
-                "Docker Desktop is required. Install it, start it, then click Start LocalPDF again.",
-                "Docker Desktop required",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
-            return;
+            var answer = MessageBox.Show(
+                "LocalPDF needs Docker Desktop. Install the official Docker Desktop package automatically now?\n\nWindows may ask for administrator approval.",
+                "Install Docker Desktop",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Question);
+            if (answer != DialogResult.Yes) return;
         }
 
         SetBusy(true);
         try
         {
+            if (docker is null)
+            {
+                SetStatus("Installing Docker Desktop...", Color.FromArgb(255, 218, 138));
+                docker = await InstallDockerDesktopAsync();
+                _start.Text = "Start LocalPDF";
+            }
+
             SetStatus("Starting Docker…", Color.FromArgb(255, 218, 138));
             if (!await IsDockerReadyAsync(docker))
             {
@@ -352,6 +358,52 @@ internal sealed class LauncherForm : Form
         return process.ExitCode;
     }
 
+    private async Task<string> InstallDockerDesktopAsync()
+    {
+        var winget = FindExecutableOnPath("winget.exe");
+        if (winget is null)
+        {
+            OpenUrl("https://www.docker.com/products/docker-desktop/");
+            throw new InvalidOperationException(
+                "Windows Package Manager (winget) was not found. The official Docker download page has been opened; install Docker Desktop, then retry.");
+        }
+
+        AppendLog("Installing the official Docker Desktop package with Windows Package Manager...");
+        var startInfo = new ProcessStartInfo(
+            winget,
+            "install --id Docker.DockerDesktop --exact --accept-package-agreements --accept-source-agreements --silent")
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+
+        using var process = new Process { StartInfo = startInfo };
+        process.OutputDataReceived += (_, eventArgs) =>
+        {
+            if (!string.IsNullOrWhiteSpace(eventArgs.Data)) AppendLog(eventArgs.Data);
+        };
+        process.ErrorDataReceived += (_, eventArgs) =>
+        {
+            if (!string.IsNullOrWhiteSpace(eventArgs.Data)) AppendLog(eventArgs.Data);
+        };
+        process.Start();
+        process.BeginOutputReadLine();
+        process.BeginErrorReadLine();
+        await process.WaitForExitAsync();
+
+        var docker = FindDockerExecutable();
+        if (process.ExitCode != 0 || docker is null)
+        {
+            throw new InvalidOperationException(
+                $"Docker Desktop installation did not complete (exit code {process.ExitCode}). Retry the installation or use the official Docker installer.");
+        }
+
+        AppendLog("Docker Desktop was installed successfully.");
+        return docker;
+    }
+
     private async Task<bool> IsDockerReadyAsync(string docker)
     {
         try
@@ -380,17 +432,24 @@ internal sealed class LauncherForm : Form
 
     private static string? FindDockerExecutable()
     {
-        var pathValue = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
-        foreach (var path in pathValue.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
-        {
-            var candidate = Path.Combine(path.Trim(), "docker.exe");
-            if (File.Exists(candidate)) return candidate;
-        }
+        var fromPath = FindExecutableOnPath("docker.exe");
+        if (fromPath is not null) return fromPath;
 
         var standard = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
             "Docker", "Docker", "resources", "bin", "docker.exe");
         return File.Exists(standard) ? standard : null;
+    }
+
+    private static string? FindExecutableOnPath(string fileName)
+    {
+        var pathValue = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+        foreach (var path in pathValue.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+        {
+            var candidate = Path.Combine(path.Trim().Trim('"'), fileName);
+            if (File.Exists(candidate)) return candidate;
+        }
+        return null;
     }
 
     private static void StartDockerDesktop()
