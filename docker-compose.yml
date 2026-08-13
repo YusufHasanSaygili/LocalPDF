@@ -1,0 +1,113 @@
+name: ${COMPOSE_PROJECT_NAME:-localpdf}
+
+services:
+  db:
+    image: postgres:16.4-bookworm
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-localpdf}
+      POSTGRES_USER: ${POSTGRES_USER:-localpdf}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-localpdf-local-only}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-localpdf} -d ${POSTGRES_DB:-localpdf}"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  migrate:
+    build:
+      context: ./services/api
+    command: ["alembic", "upgrade", "head"]
+    environment: &api-environment
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://localpdf:localpdf-local-only@db:5432/localpdf}
+      LOCAL_DATA_DIR: /data
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-524288000}
+      MAX_PDF_PAGES: ${MAX_PDF_PAGES:-2000}
+      JOB_LEASE_SECONDS: ${JOB_LEASE_SECONDS:-120}
+      JOB_MAX_ATTEMPTS: ${JOB_MAX_ATTEMPTS:-3}
+      TOOL_TIMEOUT_SECONDS: ${TOOL_TIMEOUT_SECONDS:-600}
+      PREVIEW_DPI: ${PREVIEW_DPI:-110}
+      INVITE_TOKEN_PEPPER: ${INVITE_TOKEN_PEPPER:-local-first-demo-pepper-change-in-dot-env}
+      SMTP_ENABLED: ${SMTP_ENABLED:-false}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      TELEMETRY_ENABLED: "false"
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ${LOCAL_DATA_DIR:-./data}:/data
+    restart: "no"
+
+  api:
+    build:
+      context: ./services/api
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]
+    environment: *api-environment
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    volumes:
+      - ${LOCAL_DATA_DIR:-./data}:/data
+    ports:
+      - "${API_HOST:-127.0.0.1}:${API_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ./services/api
+    command: ["python", "-m", "app.worker.main"]
+    environment: *api-environment
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    volumes:
+      - ${LOCAL_DATA_DIR:-./data}:/data
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./apps/web
+      args:
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-/api/v1}
+        API_INTERNAL_URL: ${API_INTERNAL_URL:-http://api:8000}
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-/api/v1}
+      API_INTERNAL_URL: ${API_INTERNAL_URL:-http://api:8000}
+      NEXT_TELEMETRY_DISABLED: "1"
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${WEB_HOST:-127.0.0.1}:${WEB_PORT:-3000}:3000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000').then(r=>{if(!r.ok)process.exit(1)})"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  e2e:
+    build:
+      context: ./tests/e2e
+    environment:
+      E2E_BASE_URL: http://web:3000
+    depends_on:
+      web:
+        condition: service_healthy
+    profiles: ["test"]
+
+volumes:
+  postgres-data:

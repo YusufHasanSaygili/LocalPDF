@@ -1,0 +1,10 @@
+{
+  "name": "localpdf",
+  "private": true,
+  "scripts": {
+    "lint": "npm --prefix apps/web run lint",
+    "typecheck": "npm --prefix apps/web run typecheck",
+    "test": "npm --prefix apps/web test"
+  }
+}
+
