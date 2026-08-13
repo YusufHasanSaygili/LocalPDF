@@ -15,6 +15,10 @@ data-restored/
 node_modules/
 .next/
 *.tsbuildinfo
+tools/windows-launcher/bin/
+tools/windows-launcher/obj/
+tools/windows-launcher/bundle.zip
+dist/
 coverage/
 playwright-report/
 test-results/

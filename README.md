@@ -1,59 +1,96 @@
 # LocalPDF
 
-LocalPDF; PDF ve Office belgelerini üçüncü taraf bir belge servisine göndermeden, kendi bilgisayarınızda işleyen tek kullanıcılı bir uygulamadır. Orijinal dosya create-once depoda korunur; her başarılı işlem yeni bir sürüm, SHA-256 ve append-only audit olayı üretir.
+LocalPDF is a private, local-first document processing application for Windows. It processes PDF and Office files on your own computer without sending document bytes to a third-party document service.
 
-> LocalPDF düşük riskli kişisel kullanım içindir. Signature-lite özelliği nitelikli/düzenlemeye tabi elektronik imza, sertifika tabanlı imza veya kimlik doğrulama sağlamaz.
+Original files are stored once and never modified in place. Every successful operation creates a new version, a SHA-256 digest, and an append-only audit event.
 
-## Tek komutla çalıştırma
+> LocalPDF is intended for low-risk personal use. Its signature-lite workflow is not a qualified or regulated electronic signature, certificate-based signature, or identity-verification service.
 
-Gerekenler: Docker Desktop ve Compose v2. Repo kökünde:
+## Windows executable
+
+The easiest way to run LocalPDF on Windows is the single-file launcher:
+
+1. Download `LocalPDF.exe` from the repository's [Releases](https://github.com/YusufHasanSaygili/LocalPDF/releases) page.
+2. Install and start [Docker Desktop](https://www.docker.com/products/docker-desktop/).
+3. Run `LocalPDF.exe` and click **Start LocalPDF**.
+4. The launcher builds the local services and opens `http://localhost:3000`.
+
+The executable contains the application source bundle. On first launch it extracts that bundle under:
+
+```text
+%LOCALAPPDATA%\LocalPDF\app\0.1.0
+```
+
+Persistent documents and generated files are stored separately under:
+
+```text
+%LOCALAPPDATA%\LocalPDF\data
+```
+
+Closing the launcher does not stop LocalPDF. Use **Stop services** in the launcher when you want to stop the containers. Stopping services does not delete document data.
+
+The launcher itself does not bundle Docker, PostgreSQL, LibreOffice, Tesseract, or Poppler as native Windows installations. It starts the pinned containerized stack, so Docker Desktop remains the only external runtime requirement.
+
+## Run from source
+
+Requirements:
+
+- Docker Desktop with Docker Compose v2
+- Git, only when cloning the repository
+
+From the repository root:
 
 ```powershell
 docker compose up --build
 ```
 
-Ardından:
+After startup:
 
-- Web: `http://localhost:3000`
+- Web interface: `http://localhost:3000`
 - API health: `http://localhost:8000/health`
 - API readiness: `http://localhost:8000/ready`
-- OpenAPI: `http://localhost:8000/docs`
+- OpenAPI documentation: `http://localhost:8000/docs`
 
-`.env` zorunlu değildir. Kalıcı yerel ayarları değiştirmek için:
+A private `.env` file is optional. Copy the example only when you need to customize local settings:
 
 ```powershell
 Copy-Item .env.example .env
 ```
 
-Servisler varsayılan olarak yalnız `127.0.0.1` üzerinde yayınlanır. Public internet deployment ve multi-user isolation desteklenmez.
+Services are published only on `127.0.0.1` by default. Public internet deployment and multi-user isolation are not supported.
 
-## Uygulanan akışlar
+## Features
 
-- PDF/DOCX/XLSX/PPTX yükleme; uzantı + magic/content doğrulaması
-- Immutable original, güvenli relative path, stream SHA-256 ve atomik çıktı yayını
-- PostgreSQL `SKIP LOCKED` job queue, lease/heartbeat, retry ve stale recovery
-- Progressive WebP önizleme ve form/font/dijital imza risk uyarıları
-- Merge, range/every-N/single-page split ve hash manifestli ZIP
-- Reorder, rotate, üç compression profili ve boyut raporu
-- Metin filigranı
-- Kalıcı redaksiyon: seçili alanların raster pipeline ile içerikten çıkarılması; yalnız overlay çıktı yayımlanmaz
-- Yerel Tesseract OCR ve izole LibreOffice Office-to-PDF
-- Signature-lite: alan doğrulama, hash'lenmiş tek kullanımlık token, açık rıza sürümü, manual/SMTP teslim sonucu, flatten ve final hash
-- Expiry state, iki aşamalı silme, document ZIP export ve deterministik audit JSONL
-- PostgreSQL dump + dosya/hash manifestli backup ve boş hedefe doğrulamalı restore staging
+- PDF, DOCX, XLSX, and PPTX intake with extension and content validation
+- Immutable original storage, safe relative paths, streaming SHA-256, and atomic output publication
+- PostgreSQL job queue with `SKIP LOCKED`, leases, heartbeats, retry, and stale-job recovery
+- Progressive WebP previews and warnings for forms, fonts, encryption, and existing digital signatures
+- PDF merge and range/every-N/single-page split with hashed ZIP manifests
+- Page reorder and 90/180/270-degree rotation
+- Lossless, balanced, and smallest compression profiles with before/after reports
+- Deterministic text watermarks
+- Permanent area redaction through a rasterized output pipeline; overlay-only redaction is not published
+- Local OCR through Tesseract
+- Isolated Office-to-PDF conversion through LibreOffice
+- Signature-lite fields, hashed single-use invitation tokens, explicit consent versioning, manual/SMTP delivery outcomes, flattening, and final hash sealing
+- Expiry state, two-step deletion, portable document export, and deterministic audit JSONL
+- PostgreSQL dump plus file/hash-manifest backup and verified restore into a new target
 
-## Mimari
+## Architecture
 
 ```text
-Browser → Next.js 15 → FastAPI → PostgreSQL
-                         ↓            ↑
-                    local store ← worker
-                    pikepdf / Poppler / Tesseract / LibreOffice
+Browser -> Next.js 15 -> FastAPI -> PostgreSQL
+                          |             ^
+                          v             |
+                     local store <- worker
+                     pikepdf / Poppler / Tesseract / LibreOffice
 ```
 
-`api` uzun PDF işlerini çalıştırmaz; doğrulanmış operation ve job kaydı oluşturur. `worker`, işi kendi geçici dizininde işler, PDF'i pikepdf ile yeniden açar, hash'ler ve aynı filesystem üzerinde atomik rename ile yayınlar. Event ve original satırlarında PostgreSQL mutation trigger'ları `UPDATE/DELETE` işlemini reddeder.
+The API never performs long-running PDF transformations inside an HTTP request. It validates the request and creates an operation and job. The worker claims that job, processes it in an isolated temporary directory, reopens generated PDFs with pikepdf, computes hashes, and publishes validated outputs with an atomic rename.
 
-Yerel dosya düzeni:
+PostgreSQL triggers reject updates and deletes against original and audit-event rows.
+
+The default data layout is:
 
 ```text
 data/
@@ -61,12 +98,37 @@ data/
   outputs/<document-id>/v000001/<output-id>.pdf
   previews/<source-id>/page-000001.webp
   exports/<job-id>/*.zip
+  backups/<job-id>/localpdf-backup.zip
   tmp/<job-id>/
 ```
 
-`data/`, `.env`, backup'lar, gerçek belgeler ve generated preview'lar Git'e girmez. Uygulama telemetry, analytics, remote font/CDN veya vendor belge API'si içermez. SMTP yalnız kullanıcı `.env` içinde açıkça etkinleştirirse kullanılır; aksi halde signature-lite manuel bağlantıyla çalışır.
+`data/`, `.env`, backups, real user documents, and generated previews are excluded from Git. The application contains no telemetry, analytics, remote font/CDN integration, hosted control plane, or vendor document API. SMTP is used only when the user explicitly enables it; otherwise signature-lite uses a manual invitation link.
 
-## Doğrulama
+## Build the Windows executable
+
+Requirements:
+
+- .NET 8 SDK
+- A clean Git working tree
+
+Run:
+
+```powershell
+.\tools\windows-launcher\build.ps1
+```
+
+The build script creates a self-contained `win-x64` executable and SHA-256 file:
+
+```text
+dist\LocalPDF.exe
+dist\LocalPDF.exe.sha256
+```
+
+The executable embeds only the tracked runtime application files from Git `HEAD`; it does not embed `.env`, document data, backups, local caches, or development virtual environments.
+
+## Validation
+
+Container validation:
 
 ```powershell
 docker compose build
@@ -81,7 +143,7 @@ docker compose run --rm e2e npm test
 docker compose down
 ```
 
-Docker olmadan focused geliştirme kontrolleri:
+Focused development checks without Docker:
 
 ```powershell
 cd services/api
@@ -98,34 +160,38 @@ npm test
 npm run build
 ```
 
-## Backup ve restore
+## Backup and restore
 
-Uygulama çalışırken PostgreSQL dump ve store snapshot'ı almak:
+Create a PostgreSQL dump and verified store archive while LocalPDF is running:
 
 ```powershell
 .\scripts\backup.ps1 -Destination "D:\LocalPDF-Backups"
 ```
 
-Restore aktif verinin üzerine yazmaz. Önce stack'i durdurun, sonra yeni ve boş hedef kullanın:
+Restore never overwrites the active data directory or database volume. Stop the stack and use a new, empty destination:
 
 ```powershell
 docker compose down
-.\scripts\restore.ps1 -Archive "D:\LocalPDF-Backups\localpdf-....zip" -Destination ".\data-restored"
+.\scripts\restore.ps1 `
+  -Archive "D:\LocalPDF-Backups\localpdf-....zip" `
+  -Destination ".\data-restored"
 ```
 
-Restore script'i ZIP traversal/symlink, manifest sürümü, DB dump hash'i ve her store dosyasının boyut/hash değerini doğrular. Ardından ayrı bir Compose project adıyla yeni PostgreSQL volume oluşturur, dump'ı bu boş veritabanına yükler ve `restore-info.json` içine geçiş ayarlarını yazar. Mevcut data veya DB volume otomatik silinmez.
+The restore script rejects path traversal and symlink entries, checks the manifest version, verifies the database dump hash, verifies every stored file, creates a separate Compose project and PostgreSQL volume, restores into that empty database, and writes the resulting transition settings to `restore-info.json`.
 
-## Güvenlik sınırları
+## Security boundaries
 
-- Upload içeriği düşmanca kabul edilir; filename hiçbir disk path'inde kullanılmaz.
-- Şifreli PDF açılmaz; kullanıcıdan kilidi kaldırılmış kopya istenir.
-- Subprocess çağrıları argument listesi, allowlist ve timeout kullanır; shell interpolation yoktur.
-- Redaksiyon görüntü içeriği için ayrıca görsel kontrol gerektirir.
-- Uygulama store'undan silme, SSD wear-leveling, filesystem snapshot, OneDrive geçmişi veya daha önce alınmış backup kopyalarını geri getirilemez biçimde silmeyi garanti etmez.
-- Host işletim sistemi veya Docker daemon ele geçirilmişse uygulama gizlilik garantisi veremez.
+- Uploaded documents are treated as hostile input.
+- User-supplied filenames are display metadata and are never used as storage paths.
+- Encrypted PDFs are blocked; LocalPDF asks for an unlocked copy and does not collect passwords.
+- Tool processes use argument lists, allowlisted options, timeouts, and no shell interpolation.
+- Raster image content in a redacted PDF still requires visual verification by the user.
+- Deleting data from the application store cannot guarantee destruction of SSD wear-leveling copies, filesystem snapshots, sync-provider history, or earlier backups.
+- If the host operating system or Docker daemon is compromised, LocalPDF cannot provide a confidentiality guarantee.
 
-Tam kapsam ve bağlayıcı kararlar için [PROJECT_SPEC.md](PROJECT_SPEC.md), [ARCHITECTURE.md](ARCHITECTURE.md), [DECISIONS.md](DECISIONS.md), [SECURITY_PRIVACY.md](SECURITY_PRIVACY.md) ve [ACCEPTANCE_CRITERIA.md](ACCEPTANCE_CRITERIA.md) dosyalarına bakın.
+See [PROJECT_SPEC.md](PROJECT_SPEC.md), [ARCHITECTURE.md](ARCHITECTURE.md), [DECISIONS.md](DECISIONS.md), [SECURITY_PRIVACY.md](SECURITY_PRIVACY.md), and [ACCEPTANCE_CRITERIA.md](ACCEPTANCE_CRITERIA.md) for the full product and security contracts.
 
-## Bilinen doğrulama sınırı
+## Current verification limitation
 
-Bu çalışma ortamında Docker CLI bulunmadığı için gerçek Compose first-run, PostgreSQL trigger integration, container içi LibreOffice/Tesseract/Poppler, Playwright happy path ve backup/restore round-trip burada çalıştırılamadı. İlgili image, migration, test ve scriptler repoda hazırdır; release kapısı olarak Docker bulunan makinede yukarıdaki komutlar çalıştırılmalıdır.
+The implementation host used for the first development pass did not have Docker CLI available. Backend unit tests, strict type checking, frontend tests/builds, and dependency audits passed, but the full Compose first run, PostgreSQL trigger integration, containerized LibreOffice/Tesseract/Poppler checks, Playwright happy path, and backup/restore round trip still need to be executed on a Docker-enabled Windows machine before calling this a production release.
+
