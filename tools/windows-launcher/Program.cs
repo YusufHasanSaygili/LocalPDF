@@ -17,7 +17,7 @@ internal static class Program
 
 internal sealed class LauncherForm : Form
 {
-    private const string LauncherVersion = "0.1.1";
+    private const string LauncherVersion = "0.1.2";
     private const string WebUrl = "http://localhost:3000";
     private const string HealthUrl = "http://localhost:8000/health";
 
@@ -334,6 +334,15 @@ internal sealed class LauncherForm : Form
             RedirectStandardOutput = true,
             RedirectStandardError = true
         };
+        // The launcher can install Docker while it is already running. Its inherited PATH
+        // is therefore stale, so explicitly expose docker-credential-desktop.exe and the
+        // other Docker helpers located beside docker.exe to every Docker child process.
+        var dockerBin = Path.GetDirectoryName(docker);
+        if (!string.IsNullOrWhiteSpace(dockerBin))
+        {
+            var inheritedPath = startInfo.Environment["PATH"] ?? string.Empty;
+            startInfo.Environment["PATH"] = $"{dockerBin}{Path.PathSeparator}{inheritedPath}";
+        }
         startInfo.Environment["COMPOSE_PROJECT_NAME"] = "localpdf";
         startInfo.Environment["LOCAL_DATA_DIR"] = _dataRoot.Replace('\\', '/');
         startInfo.Environment["NEXT_PUBLIC_API_BASE_URL"] = "/api/v1";

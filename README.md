@@ -18,7 +18,7 @@ The easiest way to run LocalPDF on Windows is the single-file launcher:
 The executable contains the application source bundle. On first launch it extracts that bundle under:
 
 ```text
-%LOCALAPPDATA%\LocalPDF\app\0.1.1
+%LOCALAPPDATA%\LocalPDF\app\0.1.2
 ```
 
 Persistent documents and generated files are stored separately under:
