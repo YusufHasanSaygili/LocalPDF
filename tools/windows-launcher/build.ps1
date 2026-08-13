@@ -11,6 +11,7 @@ $BuildRoot = Join-Path $DesktopRuntimeDirectory "build"
 $BundleStage = Join-Path $BuildRoot "bundle"
 $ApiDistribution = Join-Path $BuildRoot "api"
 $PyInstallerWork = Join-Path $BuildRoot "pyinstaller"
+$ModelCache = Join-Path $BuildRoot "models"
 $BundlePath = Join-Path $LauncherDirectory "bundle.zip"
 $PublishDirectory = Join-Path $LauncherDirectory "bin\publish"
 $DistributionDirectory = Join-Path $RepositoryRoot "dist"
@@ -26,6 +27,25 @@ function Reset-BuildDirectory([string]$Path) {
     Remove-Item -LiteralPath $ResolvedTarget -Recurse -Force
   }
   New-Item -ItemType Directory -Force -Path $ResolvedTarget | Out-Null
+}
+
+function Ensure-ModelArchive(
+  [string]$Name,
+  [string]$Url,
+  [long]$ExpectedBytes
+) {
+  New-Item -ItemType Directory -Force -Path $ModelCache | Out-Null
+  $Archive = Join-Path $ModelCache "$Name.argosmodel"
+  if ((Test-Path -LiteralPath $Archive) -and (Get-Item -LiteralPath $Archive).Length -eq $ExpectedBytes) {
+    return $Archive
+  }
+  if (Test-Path -LiteralPath $Archive) { Remove-Item -LiteralPath $Archive -Force }
+  Write-Host "Downloading offline translation model $Name..."
+  curl.exe --location --fail --retry 3 --output $Archive $Url
+  if ($LASTEXITCODE -ne 0 -or (Get-Item -LiteralPath $Archive).Length -ne $ExpectedBytes) {
+    throw "Translation model download failed: $Name"
+  }
+  return $Archive
 }
 
 Push-Location $RepositoryRoot
@@ -48,9 +68,26 @@ try {
     --noconfirm --clean --onedir --name LocalPDF.Api `
     --distpath $ApiDistribution --workpath $PyInstallerWork `
     --specpath $BuildRoot --paths services\api `
-    --collect-all pikepdf --collect-all pymupdf `
+    --collect-all pikepdf --collect-all pymupdf --collect-all rapidocr `
+    --collect-all onnxruntime --collect-all cv2 --collect-all docx `
+    --collect-all openpyxl --collect-all pptx --collect-all bs4 `
+    --collect-all ctranslate2 --collect-all sentencepiece `
     tools\desktop-runtime\api_entry.py
   if ($LASTEXITCODE -ne 0) { throw "Desktop API packaging failed." }
+
+  $EnglishTurkish = Ensure-ModelArchive `
+    "en-tr" `
+    "https://argos-net.com/v1/translate-en_tr-1_5.argosmodel" `
+    124742526
+  $TurkishEnglish = Ensure-ModelArchive `
+    "tr-en" `
+    "https://argos-net.com/v1/translate-tr_en-1_5.argosmodel" `
+    120561223
+  $PackagedModels = Join-Path $ApiDistribution "LocalPDF.Api\models"
+  New-Item -ItemType Directory -Force -Path "$PackagedModels\en-tr", "$PackagedModels\tr-en" | Out-Null
+  Add-Type -AssemblyName System.IO.Compression.FileSystem
+  [IO.Compression.ZipFile]::ExtractToDirectory($EnglishTurkish, "$PackagedModels\en-tr")
+  [IO.Compression.ZipFile]::ExtractToDirectory($TurkishEnglish, "$PackagedModels\tr-en")
 
   Write-Output "Building embedded web interface..."
   Push-Location (Join-Path $RepositoryRoot "apps\web")

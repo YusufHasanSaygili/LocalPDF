@@ -19,7 +19,7 @@ internal static class Program
 
 internal sealed class DesktopForm : Form
 {
-    private const string AppVersion = "0.2.0";
+    private const string AppVersion = "2.0.0";
     private const string WebUrl = "http://127.0.0.1:3000";
     private const string ApiHealthUrl = "http://127.0.0.1:8000/ready";
 

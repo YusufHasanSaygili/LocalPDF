@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi import UploadFile
+from PIL import Image
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -21,6 +22,15 @@ MEDIA_BY_EXTENSION = {
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "png": "image/png",
+    "tif": "image/tiff",
+    "tiff": "image/tiff",
+    "bmp": "image/bmp",
+    "webp": "image/webp",
+    "html": "text/html",
+    "htm": "text/html",
 }
 
 
@@ -35,7 +45,7 @@ async def ingest_upload(
     extension = display_name.rsplit(".", 1)[-1].lower() if "." in display_name else ""
     if extension not in MEDIA_BY_EXTENSION:
         raise LocalPDFError(
-            "UNSUPPORTED_MEDIA_TYPE", "Yalnız PDF, DOCX, XLSX ve PPTX kabul edilir."
+            "UNSUPPORTED_MEDIA_TYPE", "PDF, Office, image and HTML files are supported."
         )
     storage = LocalStorage()
     temp_path = storage.resolve(f"tmp/upload-{uuid.uuid4()}.part", must_exist=False)
@@ -51,9 +61,16 @@ async def ingest_upload(
                 target.write(chunk)
         _validate_magic(temp_path, extension)
         page_count: int | None = None
-        features: dict[str, object] = {"warnings": ["office_layout_may_change"]}
+        features: dict[str, object] = {"warnings": []}
         if extension == "pdf":
-            page_count, features = inspect_pdf(temp_path, settings.max_pdf_pages)
+            try:
+                page_count, features = inspect_pdf(temp_path, settings.max_pdf_pages)
+            except LocalPDFError as exc:
+                if exc.code != "PDF_ENCRYPTED":
+                    raise
+                features = {"encrypted": True, "warnings": ["password_required"]}
+        elif extension in {"docx", "xlsx", "pptx"}:
+            features = {"warnings": ["office_layout_may_change"]}
         duplicate = session.scalar(select(Original.id).where(Original.sha256 == digest.hexdigest()))
         document = Document(
             display_name=display_name,
@@ -89,7 +106,7 @@ async def ingest_upload(
             },
         )
         job = None
-        if extension == "pdf":
+        if extension == "pdf" and not features.get("encrypted"):
             job = Job(
                 kind="preview",
                 payload={"source_kind": "original", "source_id": str(original.id)},
@@ -108,6 +125,17 @@ def _validate_magic(path: Path, extension: str) -> None:
     if extension == "pdf":
         if not head.startswith(b"%PDF-"):
             raise LocalPDFError("UNSUPPORTED_MEDIA_TYPE", "Dosya içeriği geçerli bir PDF değil.")
+        return
+    if extension in {"jpg", "jpeg", "png", "tif", "tiff", "bmp", "webp"}:
+        try:
+            with Image.open(path) as image:
+                image.verify()
+        except (OSError, ValueError) as exc:
+            raise LocalPDFError("UNSUPPORTED_MEDIA_TYPE", "The image file is invalid.") from exc
+        return
+    if extension in {"html", "htm"}:
+        if b"\x00" in path.read_bytes()[:8192]:
+            raise LocalPDFError("UNSUPPORTED_MEDIA_TYPE", "The HTML file is invalid.")
         return
     if not head.startswith(b"PK"):
         raise LocalPDFError(

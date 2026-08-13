@@ -200,7 +200,11 @@ def download_original(original_id: uuid.UUID, session: Session = Depends(get_db)
     original = session.get(Original, original_id)
     if not original or original.document.state != "active":
         raise LocalPDFError("DOCUMENT_NOT_FOUND", "Dosya indirilemiyor.", status_code=404)
-    return _download(LocalStorage().resolve(original.relative_path), original.document.safe_name)
+    return _download(
+        LocalStorage().resolve(original.relative_path),
+        original.document.safe_name,
+        original.document.media_type,
+    )
 
 
 @router.get("/versions/{version_id}/download")
@@ -219,7 +223,9 @@ def download_export(job_id: uuid.UUID, session: Session = Depends(get_db)) -> Fi
     if not job or job.state != "succeeded" or not relative_path:
         raise LocalPDFError("EXPORT_NOT_READY", "Dışa aktarma henüz hazır değil.", status_code=404)
     return _download(
-        LocalStorage().resolve(relative_path), f"localpdf-export-{job_id}.zip", "application/zip"
+        LocalStorage().resolve(relative_path),
+        str(job.payload.get("export_filename") or f"localpdf-export-{job_id}.zip"),
+        str(job.payload.get("export_media_type") or "application/zip"),
     )
 
 

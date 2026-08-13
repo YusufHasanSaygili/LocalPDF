@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     app_name: str = "LocalPDF"
-    app_version: str = "0.2.0"
+    app_version: str = "2.0.0"
     database_url: str = "postgresql+psycopg://localpdf:localpdf-local-only@localhost:5432/localpdf"
     local_data_dir: Path = Path("./data")
     max_upload_bytes: int = 524_288_000

@@ -21,13 +21,58 @@ from app.settings import get_settings
 SUPPORTED_OPERATIONS = {
     "merge",
     "split",
+    "remove_pages",
+    "extract_pages",
     "reorder",
+    "scan_to_pdf",
     "rotate",
     "compress",
+    "repair",
     "watermark",
     "redact",
     "ocr",
-    "office_to_pdf",
+    "jpg_to_pdf",
+    "word_to_pdf",
+    "powerpoint_to_pdf",
+    "excel_to_pdf",
+    "html_to_pdf",
+    "pdf_to_jpg",
+    "pdf_to_word",
+    "pdf_to_powerpoint",
+    "pdf_to_excel",
+    "pdf_to_pdfa",
+    "page_numbers",
+    "crop",
+    "edit_pdf",
+    "pdf_forms",
+    "unlock",
+    "protect",
+    "compare",
+    "summarize",
+    "translate",
+    "pdf_to_markdown",
+}
+
+PDF_SOURCE_OPERATIONS = SUPPORTED_OPERATIONS - {
+    "scan_to_pdf",
+    "jpg_to_pdf",
+    "word_to_pdf",
+    "powerpoint_to_pdf",
+    "excel_to_pdf",
+    "html_to_pdf",
+    "unlock",
+}
+
+SOURCE_MEDIA_TYPES = {
+    "word_to_pdf": {"application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
+    "powerpoint_to_pdf": {
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    },
+    "excel_to_pdf": {"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+    "html_to_pdf": {"text/html"},
+    "jpg_to_pdf": {"image/jpeg", "image/png", "image/tiff", "image/bmp", "image/webp"},
+    "scan_to_pdf": {"image/jpeg", "image/png", "image/tiff", "image/bmp", "image/webp"},
+    "unlock": {"application/pdf"},
 }
 
 
@@ -51,9 +96,18 @@ def create_operation(
         raise LocalPDFError("INPUT_INVALID", "En az bir kaynak dosya seçin.")
     resolved = [_resolve_input(session, item) for item in inputs]
     if operation_type == "merge" and len(resolved) < 2:
-        raise LocalPDFError("INPUT_INVALID", "Birleştirme için en az iki PDF seçin.")
-    if operation_type != "merge" and len(resolved) != 1:
-        raise LocalPDFError("INPUT_INVALID", "Bu işlem tam olarak bir kaynak bekliyor.")
+        raise LocalPDFError("INPUT_INVALID", "Select at least two PDFs to merge.")
+    if operation_type == "compare" and len(resolved) != 2:
+        raise LocalPDFError("INPUT_INVALID", "Select exactly two PDFs to compare.")
+    if operation_type not in {"merge", "compare", "scan_to_pdf", "jpg_to_pdf"} and len(resolved) != 1:
+        raise LocalPDFError("INPUT_INVALID", "This tool expects exactly one source file.")
+    if operation_type in PDF_SOURCE_OPERATIONS and any(
+        item["media_type"] != "application/pdf" for item in resolved
+    ):
+        raise LocalPDFError("INPUT_INVALID", "This tool requires PDF input.")
+    allowed_media = SOURCE_MEDIA_TYPES.get(operation_type)
+    if allowed_media and any(item["media_type"] not in allowed_media for item in resolved):
+        raise LocalPDFError("INPUT_INVALID", "The selected file type does not match this tool.")
     parameters = body.get("parameters") or {}
     _validate_parameters(operation_type, parameters, resolved[0]["page_count"])
     document_id = resolved[0]["document_id"]
@@ -138,12 +192,24 @@ def _resolve_input(session: Session, item: object) -> dict[str, Any]:
 def _validate_parameters(
     operation_type: str, parameters: dict[str, Any], page_count: int | None
 ) -> None:
-    if operation_type == "office_to_pdf":
+    if operation_type in {
+        "scan_to_pdf",
+        "jpg_to_pdf",
+        "word_to_pdf",
+        "powerpoint_to_pdf",
+        "excel_to_pdf",
+        "html_to_pdf",
+        "unlock",
+    }:
+        if operation_type == "unlock" and not str(parameters.get("password", "")):
+            raise LocalPDFError("INPUT_INVALID", "Enter the PDF password.")
         return
     if page_count is None:
         raise LocalPDFError("INPUT_INVALID", "Bu işlem yalnız PDF kaynaklarında kullanılabilir.")
     if operation_type == "split" and parameters.get("mode", "range") == "range":
         parse_page_ranges(str(parameters.get("ranges", "")), page_count)
+    elif operation_type in {"remove_pages", "extract_pages"}:
+        parse_page_ranges(str(parameters.get("pages", "")), page_count)
     elif operation_type == "reorder":
         validate_permutation([int(page) for page in parameters.get("pages", [])], page_count)
     elif operation_type == "rotate":
@@ -152,3 +218,7 @@ def _validate_parameters(
     elif operation_type == "watermark":
         if not str(parameters.get("text", "")).strip():
             raise LocalPDFError("INPUT_INVALID", "Filigran metni boş olamaz.")
+    elif operation_type == "protect" and len(str(parameters.get("password", ""))) < 4:
+        raise LocalPDFError("INPUT_INVALID", "Use a password with at least 4 characters.")
+    elif operation_type == "edit_pdf" and not str(parameters.get("text", "")).strip():
+        raise LocalPDFError("INPUT_INVALID", "Enter text to add.")

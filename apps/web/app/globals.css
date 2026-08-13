@@ -30,9 +30,14 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .app-shell { display: grid; grid-template-columns: 224px minmax(0, 1fr); min-height: 100vh; }
 .sidebar { position: sticky; top: 0; height: 100vh; padding: 28px 18px 20px; background: #133c3a; color: #eef7f4; display: flex; flex-direction: column; gap: 22px; }
 .brand { display: flex; align-items: center; gap: 11px; padding: 0 9px 8px; font: 700 20px Georgia, serif; letter-spacing: -.3px; }
+.brand small { margin-left: 4px; color: #91b9b1; font: 700 10px ui-sans-serif, system-ui; }
 .brand-mark { display: grid; place-items: center; width: 31px; height: 35px; border-radius: 5px 5px 9px 5px; background: #eff9f4; color: var(--teal); font: 700 18px Georgia, serif; box-shadow: inset -6px -6px 0 #b7d8ce; }
 .sidebar nav, .sidebar-section { display: grid; gap: 4px; }
 .sidebar-section { overflow-y: auto; padding-top: 5px; }
+.tool-catalog { gap: 15px; padding-right: 4px; scrollbar-width: thin; scrollbar-color: #4c7772 transparent; }
+.tool-category { display: grid; gap: 2px; }
+.tool-category .eyebrow { padding: 4px 10px 6px; }
+.tool-category .nav-item { padding-top: 7px; padding-bottom: 7px; font-size: 12px; }
 .sidebar .eyebrow { color: #91b9b1; padding: 8px 10px; }
 .nav-item { width: 100%; border: 0; border-radius: 8px; padding: 10px 11px; background: transparent; color: #c9ddd8; text-align: left; display: flex; align-items: center; gap: 11px; cursor: pointer; transition: .15s ease; }
 .nav-item span { width: 20px; text-align: center; font-weight: 700; }
@@ -113,6 +118,7 @@ h3 { margin-bottom: 6px; font-size: 15px; }
 .tool-panel p { color: #61706e; font-size: 11px; line-height: 1.55; }
 .tool-panel label { display: grid; gap: 6px; margin-bottom: 12px; color: #526361; font-size: 11px; font-weight: 700; }
 .tool-panel input, .tool-panel select { width: 100%; padding: 9px 10px; border: 1px solid #d8dfda; border-radius: 7px; background: white; color: var(--ink); }
+.field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .scope-inline { padding: 8px; border-left: 3px solid var(--amber); background: var(--amber-soft); }
 .manual-link { display: flex; gap: 5px; margin-bottom: 10px; }
 .manual-link code { min-width: 0; overflow: hidden; text-overflow: ellipsis; padding: 7px; background: white; }

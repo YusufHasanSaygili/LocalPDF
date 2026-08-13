@@ -36,6 +36,7 @@ from app.infrastructure.db.models import (
 from app.infrastructure.db.session import SessionLocal
 from app.infrastructure.storage import LocalStorage
 from app.infrastructure.tools import pdf as pdf_tools
+from app.infrastructure.tools import toolbox
 from app.infrastructure.tools.system import executable, run_tool
 from app.settings import get_settings
 
@@ -283,8 +284,17 @@ def process_operation(session: Session, job: Job, workdir: Path) -> None:
         outputs = [output]
     elif operation.type == "split":
         outputs = pdf_tools.split(source_paths[0], workdir, operation.parameters)
+    elif operation.type == "remove_pages":
+        toolbox.remove_pages(source_paths[0], output, str(operation.parameters["pages"]))
+        outputs = [output]
+    elif operation.type == "extract_pages":
+        toolbox.extract_pages(source_paths[0], output, str(operation.parameters["pages"]))
+        outputs = [output]
     elif operation.type == "reorder":
         pdf_tools.reorder(source_paths[0], output, operation.parameters["pages"])
+        outputs = [output]
+    elif operation.type in {"scan_to_pdf", "jpg_to_pdf"}:
+        toolbox.images_to_pdf(source_paths, output)
         outputs = [output]
     elif operation.type == "rotate":
         pdf_tools.rotate(
@@ -296,6 +306,9 @@ def process_operation(session: Session, job: Job, workdir: Path) -> None:
             source_paths[0], output, operation.parameters.get("profile", "lossless")
         )
         outputs = [output]
+    elif operation.type == "repair":
+        _, result_metadata = toolbox.repair_pdf(source_paths[0], output)
+        outputs = [output]
     elif operation.type == "watermark":
         pdf_tools.watermark(source_paths[0], output, operation.parameters)
         outputs = [output]
@@ -303,13 +316,92 @@ def process_operation(session: Session, job: Job, workdir: Path) -> None:
         pdf_tools.redact(source_paths[0], output, operation.parameters, workdir)
         outputs = [output]
     elif operation.type == "ocr":
-        pdf_tools.ocr(source_paths[0], output, operation.parameters, workdir)
+        _, result_metadata = toolbox.ocr_pdf(source_paths[0], output, operation.parameters)
         outputs = [output]
-    elif operation.type == "office_to_pdf":
-        pdf_tools.office_to_pdf(source_paths[0], output, workdir)
+    elif operation.type in {"word_to_pdf", "powerpoint_to_pdf", "excel_to_pdf", "html_to_pdf"}:
+        toolbox.office_to_pdf(source_paths[0], output)
         outputs = [output]
+    elif operation.type == "pdf_to_pdfa":
+        _, result_metadata = toolbox.pdf_to_pdfa(source_paths[0], output)
+        outputs = [output]
+    elif operation.type == "page_numbers":
+        toolbox.add_page_numbers(source_paths[0], output, operation.parameters)
+        outputs = [output]
+    elif operation.type == "crop":
+        toolbox.crop_pdf(source_paths[0], output, operation.parameters)
+        outputs = [output]
+    elif operation.type == "edit_pdf":
+        toolbox.edit_pdf(source_paths[0], output, operation.parameters)
+        outputs = [output]
+    elif operation.type == "pdf_forms":
+        toolbox.add_pdf_form(source_paths[0], output, operation.parameters)
+        outputs = [output]
+    elif operation.type == "unlock":
+        toolbox.unlock_pdf(source_paths[0], output, str(operation.parameters["password"]))
+        outputs = [output]
+    elif operation.type == "compare":
+        _, result_metadata = toolbox.compare_pdfs(source_paths[0], source_paths[1], output)
+        outputs = [output]
+    elif operation.type == "summarize":
+        _, result_metadata = toolbox.summarize_pdf(
+            source_paths[0], output, int(operation.parameters.get("max_sentences", 8))
+        )
+        outputs = [output]
+    elif operation.type == "translate":
+        _, result_metadata = toolbox.translate_pdf(
+            source_paths[0],
+            output,
+            str(operation.parameters.get("source_language", "en")),
+            str(operation.parameters.get("target_language", "tr")),
+        )
+        outputs = [output]
+    elif operation.type in {
+        "pdf_to_jpg",
+        "pdf_to_word",
+        "pdf_to_powerpoint",
+        "pdf_to_excel",
+        "pdf_to_markdown",
+        "protect",
+    }:
+        export_specs = {
+            "pdf_to_jpg": ("pages.zip", "application/zip"),
+            "pdf_to_word": (
+                "converted.docx",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            ),
+            "pdf_to_powerpoint": (
+                "converted.pptx",
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            ),
+            "pdf_to_excel": (
+                "converted.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ),
+            "pdf_to_markdown": ("converted.md", "text/markdown; charset=utf-8"),
+            "protect": ("protected.pdf", "application/pdf"),
+        }
+        filename, media_type = export_specs[operation.type]
+        artifact = workdir / filename
+        if operation.type == "pdf_to_jpg":
+            result_metadata = toolbox.pdf_to_jpg(source_paths[0], artifact)
+        elif operation.type == "pdf_to_word":
+            result_metadata = toolbox.pdf_to_word(source_paths[0], artifact)
+        elif operation.type == "pdf_to_powerpoint":
+            result_metadata = toolbox.pdf_to_powerpoint(source_paths[0], artifact)
+        elif operation.type == "pdf_to_excel":
+            result_metadata = toolbox.pdf_to_excel(source_paths[0], artifact)
+        elif operation.type == "pdf_to_markdown":
+            result_metadata = toolbox.pdf_to_markdown(source_paths[0], artifact)
+        else:
+            result_metadata = toolbox.protect_pdf(
+                source_paths[0], artifact, str(operation.parameters["password"])
+            )
+        publish_operation_export(
+            session, operation, job, artifact, filename, media_type, result_metadata
+        )
+        return
     else:
-        raise LocalPDFError("JOB_KIND_UNKNOWN", "PDF işlemi desteklenmiyor.")
+        raise LocalPDFError("JOB_KIND_UNKNOWN", "PDF operation is not supported.")
     job.state = "validating"
     job.progress_percent = 85
     session.commit()
@@ -320,6 +412,60 @@ def process_operation(session: Session, job: Job, workdir: Path) -> None:
     payload["result_ids"] = [str(result_id) for result_id in result_ids]
     payload["result"] = result_metadata
     job.payload = payload
+
+
+def publish_operation_export(
+    session: Session,
+    operation: Operation,
+    job: Job,
+    artifact: Path,
+    filename: str,
+    media_type: str,
+    result_metadata: dict[str, Any],
+) -> None:
+    if not artifact.exists() or artifact.stat().st_size < 1:
+        raise LocalPDFError("OUTPUT_VALIDATION_FAILED", "The exported file was not created.")
+    storage = LocalStorage()
+    relative = f"exports/{job.id}/{filename}"
+    target = storage.resolve(relative, must_exist=False)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    os.replace(artifact, target)
+    digest, size = storage.hash_file(target)
+    result = {
+        **result_metadata,
+        "download_url": f"/api/v1/exports/{job.id}/download",
+        "filename": filename,
+        "media_type": media_type,
+        "sha256": digest,
+        "byte_size": size,
+    }
+    payload = dict(job.payload)
+    payload.update(
+        {
+            "export_relative_path": relative,
+            "export_filename": filename,
+            "export_media_type": media_type,
+            "result_ids": [],
+            "result": result,
+        }
+    )
+    job.payload = payload
+    input_sha256 = session.scalar(
+        select(OperationInput.sha256)
+        .where(OperationInput.operation_id == operation.id)
+        .order_by(OperationInput.position)
+        .limit(1)
+    )
+    append_event(
+        session,
+        "operation.succeeded",
+        "operation",
+        operation.id,
+        job.payload.get("correlation_id", str(job.id)),
+        document_sha256=input_sha256,
+        output_sha256=digest,
+        payload={"type": operation.type, "filename": filename, "byte_size": size},
+    )
 
 
 def publish_versions(
